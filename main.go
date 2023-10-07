@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -36,7 +39,19 @@ type ImgProcessedResult struct {
 		ImageURL  string
 		Perimeter float64
 	}
-	visitTime string
+	visitTime time.Time
+}
+
+type datePerimeter struct {
+	Date      string  `json:"date"`
+	Perimeter float64 `json:"perimeter"`
+}
+
+type visitResponseObject struct {
+	StoreID   string          `json:"store_id"`
+	Area      string          `json:"area"`
+	StoreName string          `json:"store_name"`
+	Data      []datePerimeter `json:"data"`
 }
 
 type JobStatusEnum string
@@ -61,21 +76,63 @@ type JobStatusInfo struct {
 var DataBase map[string]ImgProcessedResult
 var dataBaseLock sync.Mutex
 var jobStatus map[int]JobStatusInfo
+var storeMasterDB map[string]storeMaseterData
 
 type Job struct {
 	ID   int
 	Task ImgProcessingRequest
 }
 
+type storeMaseterData struct {
+	storeName string
+	areaCode  string
+}
+
 var jobQueue chan Job
 
-func main() {
-	fmt.Println("Running Image Processing API")
-	port := ":8080"
+func loadStoreMasterData() {
 
+	file, err := os.Open("StoreMasterAssignment.csv")
+
+	if err != nil {
+		log.Fatal("Error while reading the file", err)
+	}
+
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	records, err := reader.ReadAll()
+
+	// Checks for the error
+	if err != nil {
+		fmt.Println("Error reading records")
+	}
+
+	for _, eachrecord := range records {
+		areaCode := eachrecord[0]
+		storeName := eachrecord[1]
+		storeID := eachrecord[2]
+
+		storeMasterDB[storeID] = storeMaseterData{
+			storeName: storeName,
+			areaCode:  areaCode,
+		}
+	}
+}
+func main() {
+	// fmt.Println("Running Image Processing API")
 	jobQueue = make(chan Job, MaxQueueSize)
 	DataBase = make(map[string]ImgProcessedResult)
 	jobStatus = make(map[int]JobStatusInfo)
+	storeMasterDB = make(map[string]storeMaseterData)
+
+	port := ":8080"
+
+	// load store master data
+	loadStoreMasterData()
+
+	fmt.Println("store master data", storeMasterDB["RP00002"])
 
 	for i := 1; i <= Threads; i++ {
 		go createThreads(i)
@@ -203,26 +260,63 @@ func GetJobStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type visitresponseObject struct {
+	StoreID   string `json:"storeID"`
+	Area      string `json:"area"`
+	StoreName string `json:"storeName"`
+	Data      []struct {
+		Date      string  `json:"date"`
+		Perimeter float64 `json:"perimeter"`
+	} `json:"data"`
+}
+
 func GetVisitInfo(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Running get visit info function")
 
-	storeId := r.URL.Query().Get("storeid")
-	if storeId == "" {
-		http.Error(w, "Missing store id parameter", http.StatusBadRequest)
+	visits := make([]visitResponseObject, 0)
+
+	for storeId, imageProcessedData := range DataBase {
+
+		fmt.Println("store id", storeId)
+		processedImages := imageProcessedData.ProcessedImages
+
+		var data []datePerimeter
+
+		for _, processedImage := range processedImages {
+			data = append(data, datePerimeter{
+				Date:      imageProcessedData.visitTime.Format(time.RFC3339),
+				Perimeter: processedImage.Perimeter,
+			})
+		}
+
+		storeMaseterData := storeMasterDB[storeId]
+
+		fmt.Println("store master data", storeMaseterData)
+
+		visitResponseObject := visitResponseObject{
+			StoreID:   storeId,
+			Area:      storeMaseterData.areaCode,
+			StoreName: storeMaseterData.storeName,
+			Data:      data,
+		}
+		fmt.Println("visit response object", visitResponseObject)
+
+		visits = append(visits, visitResponseObject)
+	}
+
+	jsonData, err := json.Marshal(visits)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	startDate := r.URL.Query().Get("startdate")
-	if startDate == "" {
-		http.Error(w, "Missing start date parameter", http.StatusBadRequest)
-		return
-	}
+	w.WriteHeader(http.StatusOK)
 
-	endDate := r.URL.Query().Get("enddate")
-	if endDate == "" {
-		http.Error(w, "Missing end date parameter", http.StatusBadRequest)
-		return
-	}
+	// Set the content type header to indicate JSON response
+	w.Header().Set("Content-Type", "application/json")
+
+	// Write the JSON data to the response
+	w.Write(jsonData)
 
 }
 
@@ -281,10 +375,14 @@ func ProcessImages(req ImgProcessingRequest, jobId int) {
 
 		}
 
+		fmt.Println("visit time", visit.VisitTime)
+		// convery string to time
+		dateInTimeFormat := stringToDate(visit.VisitTime)
+
 		precessedResult := ImgProcessedResult{
 			StoreID:         storeId,
 			ProcessedImages: processedData,
-			visitTime:       visit.VisitTime,
+			visitTime:       dateInTimeFormat,
 		}
 
 		// save processed result in database
@@ -308,4 +406,12 @@ func persistData(storeID string, result ImgProcessedResult) {
 	defer dataBaseLock.Unlock()
 	DataBase[storeID] = result
 	return
+}
+
+func stringToDate(date string) time.Time {
+	t, err := time.Parse(time.RFC3339, date)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return t
 }
