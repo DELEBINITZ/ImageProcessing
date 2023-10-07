@@ -2,7 +2,8 @@
 
 1: Installation of Go
 https://go.dev/doc/install
-2: cd <foldername>
+
+2: cd foldername
 
 ```
 run the command:
