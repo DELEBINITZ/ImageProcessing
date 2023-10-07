@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -17,14 +20,13 @@ const (
 	Threads      = 2
 )
 
-// TODO: time format
+// stores each visit data
 type Visit struct {
 	StoreID   string   `json:"store_id"`
 	ImageURL  []string `json:"image_url"`
 	VisitTime string   `json:"visit_time"`
 }
 
-// put validation method in structs
 type ImgProcessingRequest struct {
 	Count  int     `json:"count"`
 	Visits []Visit `json:"visits"`
@@ -36,7 +38,18 @@ type ImgProcessedResult struct {
 		ImageURL  string
 		Perimeter float64
 	}
-	visitTime string
+	visitTime time.Time
+}
+
+type datePerimeter struct {
+	Date      string  `json:"date"`
+	Perimeter float64 `json:"perimeter"`
+}
+type visitResponseObject struct {
+	StoreID   string          `json:"store_id"`
+	Area      string          `json:"area"`
+	StoreName string          `json:"store_name"`
+	Data      []datePerimeter `json:"data"`
 }
 
 type JobStatusEnum string
@@ -58,37 +71,92 @@ type JobStatusInfo struct {
 	}
 }
 
+// key is store id and value is processed result
 var DataBase map[string]ImgProcessedResult
 var dataBaseLock sync.Mutex
+
+// key is job id and value is job status
 var jobStatus map[int]JobStatusInfo
+
+// stored store master data
+var storeMasterDB map[string]storeMaseterData
 
 type Job struct {
 	ID   int
 	Task ImgProcessingRequest
 }
 
+type storeMaseterData struct {
+	storeName string
+	areaCode  string
+}
+
 var jobQueue chan Job
 
+// load store master data
+func loadStoreMasterData() {
+
+	file, err := os.Open("StoreMasterAssignment.csv")
+
+	if err != nil {
+		log.Fatal("Error while reading the file", err)
+	}
+
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	records, err := reader.ReadAll()
+
+	// Checks for the error
+	if err != nil {
+		fmt.Println("Error reading records")
+	}
+
+	for _, eachrecord := range records {
+		areaCode := eachrecord[0]
+		storeName := eachrecord[1]
+		storeID := eachrecord[2]
+
+		storeMasterDB[storeID] = storeMaseterData{
+			storeName: storeName,
+			areaCode:  areaCode,
+		}
+	}
+}
 func main() {
 	fmt.Println("Running Image Processing API")
+
+	// create job queue for processing images
+	jobQueue = make(chan Job, MaxQueueSize)
+	// create database for storing processed images
+	DataBase = make(map[string]ImgProcessedResult)
+	// create job status map
+	jobStatus = make(map[int]JobStatusInfo)
+	// create store master database
+	storeMasterDB = make(map[string]storeMaseterData)
+
 	port := ":8080"
 
-	jobQueue = make(chan Job, MaxQueueSize)
-	DataBase = make(map[string]ImgProcessedResult)
-	jobStatus = make(map[int]JobStatusInfo)
+	// load store master data from csv using go routine
+	go loadStoreMasterData()
 
+	// create threads for processing images
 	for i := 1; i <= Threads; i++ {
 		go createThreads(i)
 	}
 
+	// handle routes and requests
 	http.HandleFunc("/", servHome)
 	http.HandleFunc("/api/submit/", SubmitJob)
 	http.HandleFunc("/api/status", GetJobStatus)
 	http.HandleFunc("/api/visits", GetVisitInfo)
 
+	// start server
 	http.ListenAndServe(port, nil)
 }
 
+// home route handler
 func servHome(w http.ResponseWriter, r *http.Request) {
 	// fmt.Println("API is Live")
 
@@ -104,6 +172,7 @@ func servHome(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// submit job route handler
 func SubmitJob(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("running submit job function")
 
@@ -114,6 +183,7 @@ func SubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Declare a new ImgProcessingRequest struct.
 	var req ImgProcessingRequest
 
 	// Decode the JSON request body into 'req'
@@ -145,6 +215,7 @@ func SubmitJob(w http.ResponseWriter, r *http.Request) {
 
 	// create unique Id for the job check for uuid
 	job := Job{ID: int(uuid.New().ID()), Task: req}
+	// add job to job queue
 	jobQueue <- job
 
 	// maket job status as ongoing
@@ -153,10 +224,12 @@ func SubmitJob(w http.ResponseWriter, r *http.Request) {
 		Status: StatusPending,
 	}
 
+	// create response object
 	responseObject := map[string]interface{}{
 		"job_id": job.ID,
 	}
 
+	// send response
 	w.WriteHeader(http.StatusCreated)
 	w.Header().Set("Content-Type", "application/json")
 
@@ -166,29 +239,41 @@ func SubmitJob(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// get job status route handler
 func GetJobStatus(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Running get job status function")
+
+	// get the job id from query params
 	jobId := r.URL.Query().Get("jobid")
+
+	// check if job id is empty
 	if jobId == "" {
 		http.Error(w, "Missing job id parameter", http.StatusBadRequest)
 		return
 	}
 
+	// convert jobId from string to int and check for error
 	jobIdInt, err := strconv.Atoi(jobId)
 	if err != nil {
 		http.Error(w, "{}", http.StatusBadRequest)
 		return
 	}
 
+	// aquiare lock on database
 	dataBaseLock.Lock()
+	// release lock after function execution
 	defer dataBaseLock.Unlock()
 
+	// check if job id exists in job status map
 	status, exists := jobStatus[jobIdInt]
 
+	// if job id does not exists return 400 error
 	if !exists {
 		http.Error(w, "Job not found", http.StatusBadRequest)
 		return
 	}
 
+	// create response object
 	responseObject := map[string]interface{}{
 		"status": status,
 		"job_id": jobIdInt,
@@ -203,26 +288,59 @@ func GetJobStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// get visit info route handler
 func GetVisitInfo(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Running get visit info function")
 
-	storeId := r.URL.Query().Get("storeid")
-	if storeId == "" {
-		http.Error(w, "Missing store id parameter", http.StatusBadRequest)
+	// create visie array of type visitResponseObject
+	visits := make([]visitResponseObject, 0)
+
+	// loop over database
+	for storeId, imageProcessedData := range DataBase {
+
+		// get processed images from database
+		processedImages := imageProcessedData.ProcessedImages
+
+		// create data array of type datePerimeter
+		var data []datePerimeter
+
+		// loop over processed images and append data to data array
+		for _, processedImage := range processedImages {
+			data = append(data, datePerimeter{
+				Date:      imageProcessedData.visitTime.Format(time.RFC3339),
+				Perimeter: processedImage.Perimeter,
+			})
+		}
+
+		// get store master data from store master database
+		storeMaseterData := storeMasterDB[storeId]
+
+		// create visit response object
+		visitResponseObject := visitResponseObject{
+			StoreID:   storeId,
+			Area:      storeMaseterData.areaCode,
+			StoreName: storeMaseterData.storeName,
+			Data:      data,
+		}
+
+		// append visit response object to visits array
+		visits = append(visits, visitResponseObject)
+	}
+
+	// convert visits array to json
+	jsonData, err := json.Marshal(visits)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	startDate := r.URL.Query().Get("startdate")
-	if startDate == "" {
-		http.Error(w, "Missing start date parameter", http.StatusBadRequest)
-		return
-	}
+	w.WriteHeader(http.StatusOK)
 
-	endDate := r.URL.Query().Get("enddate")
-	if endDate == "" {
-		http.Error(w, "Missing end date parameter", http.StatusBadRequest)
-		return
-	}
+	// Set the content type header to indicate JSON response
+	w.Header().Set("Content-Type", "application/json")
+
+	// Write the JSON data to the response
+	w.Write(jsonData)
 
 }
 
@@ -243,6 +361,7 @@ func createThreads(id int) {
 func ProcessImages(req ImgProcessingRequest, jobId int) {
 	fmt.Println("Running Process images function")
 
+	// loop over visits array
 	for _, visit := range req.Visits {
 
 		// check if store id is empty
@@ -270,10 +389,14 @@ func ProcessImages(req ImgProcessingRequest, jobId int) {
 			Perimeter float64
 		}
 
+		// loop over image url array
 		for _, imgUrl := range visit.ImageURL {
-			time.Sleep(10 * time.Second)
+			// mimic image processing
+			time.Sleep(2 * time.Second)
+			// mimics calculating perimeter
 			perimenter := calculatePerimeter(imgUrl)
 
+			// append processed data to processedData array
 			processedData = append(processedData, struct {
 				ImageURL  string
 				Perimeter float64
@@ -281,10 +404,14 @@ func ProcessImages(req ImgProcessingRequest, jobId int) {
 
 		}
 
+		// convery string to time
+		dateInTimeFormat := stringToDate(visit.VisitTime)
+
+		// create processed result object
 		precessedResult := ImgProcessedResult{
 			StoreID:         storeId,
 			ProcessedImages: processedData,
-			visitTime:       visit.VisitTime,
+			visitTime:       dateInTimeFormat,
 		}
 
 		// save processed result in database
@@ -298,14 +425,28 @@ func ProcessImages(req ImgProcessingRequest, jobId int) {
 	}
 }
 
+// mimics calculating perimeter
 func calculatePerimeter(imgUrl string) int {
 	fmt.Println("Running calculate perimeter function")
 	return rand.Intn(100)
 }
 
+// save processed result in database
 func persistData(storeID string, result ImgProcessedResult) {
+	// aquiare lock on database
 	dataBaseLock.Lock()
+	// release lock after function execution
 	defer dataBaseLock.Unlock()
+	// save processed result in database
 	DataBase[storeID] = result
 	return
+}
+
+// helper function to convert string to time
+func stringToDate(date string) time.Time {
+	t, err := time.Parse(time.RFC3339, date)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return t
 }
