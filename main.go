@@ -271,7 +271,7 @@ func ProcessImages(req ImgProcessingRequest, jobId int) {
 		}
 
 		for _, imgUrl := range visit.ImageURL {
-			time.Sleep(10 * time.Second)
+			time.Sleep(2 * time.Second)
 			perimenter := calculatePerimeter(imgUrl)
 
 			processedData = append(processedData, struct {
