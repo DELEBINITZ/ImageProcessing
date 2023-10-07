@@ -20,7 +20,6 @@ const (
 	Threads      = 2
 )
 
-// TODO: time format
 type Visit struct {
 	StoreID   string   `json:"store_id"`
 	ImageURL  []string `json:"image_url"`
@@ -46,7 +45,6 @@ type datePerimeter struct {
 	Date      string  `json:"date"`
 	Perimeter float64 `json:"perimeter"`
 }
-
 type visitResponseObject struct {
 	StoreID   string          `json:"store_id"`
 	Area      string          `json:"area"`
