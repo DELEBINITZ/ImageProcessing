@@ -64,3 +64,5 @@ threads can be created when the job is recieved and can be destroyed when the jo
 6: Local storage is difficult to handle, so we can use mongo or sql database to store the data
 
 7: Image handling should be done.
+
+8: Testing should have been done.
