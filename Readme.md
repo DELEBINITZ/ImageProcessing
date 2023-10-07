@@ -10,6 +10,9 @@ run the command:
 3: go run main.go
 
 ```
+
+```
+
 go run main.go
 
 ## ENVIRONMENT USED TO RUN THE PROJECT
@@ -63,4 +66,7 @@ threads can be created when the job is recieved and can be destroyed when the jo
 6: Local storage is difficult to handle, so we can use mongo or sql database to store the data
 
 7: Image handling should be done.
+
+```
+
 ```
